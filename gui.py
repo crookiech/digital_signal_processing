@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
     sig_set_v = pyqtSignal(int, float)
     sig_set_i = pyqtSignal(int, float)
     sig_set_out = pyqtSignal(bool)
-    sig_measure = pyqtSignal(int)
+    # sig_measure = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
         self.sig_set_v.connect(self.worker.set_voltage)
         self.sig_set_i.connect(self.worker.set_current)
         self.sig_set_out.connect(self.worker.set_output)
-        self.sig_measure.connect(self.worker.measure)
+        # self.sig_measure.connect(self.worker.measure)
 
         self.worker.error_occurred.connect(self.on_error)
         self.worker.connected.connect(self.on_connected)

@@ -65,16 +65,16 @@ class SerialWorker(QObject):
         self._write(f"CH{ch}:CURRent {i:.3f}")
 
     def set_output(self, on: bool):
-        self._write(f"OUTPUT {'ON' if on else 'OFF'}")
+        self._write(f"OUTPut {'ON' if on else 'OFF'}")
 
-    def measure(self, ch: int):
-        v = self._query(f"MEASure:VOLTage? CH{ch}")
-        i = self._query(f"MEASure:CURRENT? CH{ch}")
-        try:
-            vf = float(v) if v else 0.0
-        except ValueError:
-            vf = 0.0
-        try:
-            if_ = float(i) if i else 0.0
-        except ValueError:
-            if_ = 0.0
+    # def measure(self, ch: int):
+    #     v = self._query(f"MEASure:VOLTage? CH{ch}")
+    #     i = self._query(f"MEASure:CURRENT? CH{ch}")
+    #     try:
+    #         vf = float(v) if v else 0.0
+    #     except ValueError:
+    #         vf = 0.0
+    #     try:
+    #         if_ = float(i) if i else 0.0
+    #     except ValueError:
+    #         if_ = 0.0
