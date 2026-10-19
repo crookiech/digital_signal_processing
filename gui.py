@@ -1,5 +1,4 @@
-import serial
-import serial.tools.list_ports
+import pyvisa
 from PyQt6.QtGui import QShortcut, QKeySequence
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QDoubleSpinBox, QPushButton, QComboBox, QPlainTextEdit, QMessageBox, QFormLayout
@@ -21,13 +20,15 @@ class ChannelPanel(QGroupBox):
 
         self.v_spin = QDoubleSpinBox()
         self.v_spin.setRange(0.0, v_max)
-        self.v_spin.setDecimals(3)
+        self.v_spin.setDecimals(2)
+        self.v_spin.setStepType(QDoubleSpinBox.StepType.DefaultStepType)
         self.v_spin.setSingleStep(0.1)
         self.v_spin.setSuffix(" В")
 
         self.i_spin = QDoubleSpinBox()
         self.i_spin.setRange(0.0, i_max)
-        self.i_spin.setDecimals(3)
+        self.i_spin.setDecimals(2)
+        self.i_spin.setStepType(QDoubleSpinBox.StepType.DefaultStepType)
         self.i_spin.setSingleStep(0.1)
         self.i_spin.setSuffix(" А")
 
@@ -53,7 +54,6 @@ class MainWindow(QMainWindow):
     sig_set_v = pyqtSignal(int, float)
     sig_set_i = pyqtSignal(int, float)
     sig_set_out = pyqtSignal(bool)
-    # sig_measure = pyqtSignal(int)
 
     def __init__(self):
         super().__init__()
@@ -61,6 +61,14 @@ class MainWindow(QMainWindow):
         self.resize(640, 600)
 
         self._connected = False
+        self.rm = None
+        try:
+            self.rm = pyvisa.ResourceManager('@ivi')
+        except Exception:
+            try:
+                self.rm = pyvisa.ResourceManager('@py')
+            except Exception as e:
+                print(f"VISA не инициализирован: {e}")
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -81,11 +89,6 @@ class MainWindow(QMainWindow):
         port_row.addWidget(self.port_combo, 1)
         port_row.addWidget(btn_refresh)
         conn_layout.addRow("Порт:", port_row)
-
-        self.baud_combo = QComboBox()
-        self.baud_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
-        self.baud_combo.setCurrentText("9600")
-        conn_layout.addRow("Бод:", self.baud_combo)
 
         connect_row = QHBoxLayout()
         self.btn_connect = QPushButton("Подключить")
@@ -138,7 +141,6 @@ class MainWindow(QMainWindow):
         self.sig_set_v.connect(self.worker.set_voltage)
         self.sig_set_i.connect(self.worker.set_current)
         self.sig_set_out.connect(self.worker.set_output)
-        # self.sig_measure.connect(self.worker.measure)
 
         self.worker.error_occurred.connect(self.on_error)
         self.worker.connected.connect(self.on_connected)
@@ -156,6 +158,7 @@ class MainWindow(QMainWindow):
         self._set_status("disconnected")
 
         self.shortcut_q = QShortcut(QKeySequence("q"), self)
+        self.shortcut_q.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.shortcut_q.activated.connect(self.close)
 
         self.shortcut_ctrl_c = QShortcut(QKeySequence("Ctrl+C"), self)
@@ -172,21 +175,28 @@ class MainWindow(QMainWindow):
 
     def refresh_ports(self):
         self.port_combo.clear()
-        ports = serial.tools.list_ports.comports()
-        for p in ports:
-            self.port_combo.addItem(f"{p.device} — {p.description}", p.device)
-        if not ports:
-            self.port_combo.addItem("Нет портов", None)
+        if not self.rm:
+            self.port_combo.addItem("VISA не инициализирован", None)
+            return
+        try:
+            resources = self.rm.list_resources()
+            usb_instrs = [r for r in resources if 'USB' in r and 'INSTR' in r]
+            for res in usb_instrs:
+                self.port_combo.addItem(res, res)
+            if not usb_instrs:
+                self.port_combo.addItem("Нет USB-инструментов", None)
+        except Exception as e:
+            print(f"Ошибка поиска ресурсов: {e}")
+            self.port_combo.addItem("Ошибка поиска", None)
 
     def on_connect_toggled(self, checked: bool):
         if checked:
             port = self.port_combo.currentData()
             if not port:
-                QMessageBox.warning(self, "Ошибка", "выберите COM-порт")
+                QMessageBox.warning(self, "Ошибка", "выберите USB-инструмент")
                 self.btn_connect.setChecked(False)
                 return
-            baud = int(self.baud_combo.currentText())
-            self.sig_open.emit(port, baud)
+            self.sig_open.emit(port, 0)
         else:
             self.sig_close.emit()
             self.poll_timer.stop()
@@ -206,20 +216,21 @@ class MainWindow(QMainWindow):
             self.btn_connect.blockSignals(False)
             self.btn_connect.setText("Подключить")
             self.poll_timer.stop()
+            self.append_log(f"Отключено от {port}")
 
     def on_set_v(self, ch: int, value: float):
         if not self._connected:
             self.on_error(f"не удалось установить напряжение CH{ch}, нет подключения")
             return
         self.sig_set_v.emit(ch, value)
-        self.append_log(f"CH{ch}: напряжение установлено {value:.3f} В")
+        self.append_log(f"CH{ch}: напряжение установлено {value:.2f} В")
 
     def on_set_i(self, ch: int, value: float):
         if not self._connected:
             self.on_error(f"не удалось установить ток CH{ch}, нет подключения")
             return
         self.sig_set_i.emit(ch, value)
-        self.append_log(f"CH{ch}: ток установлен {value:.3f} А")
+        self.append_log(f"CH{ch}: ток установлен {value:.2f} А")
 
     def on_output_toggled(self, checked: bool):
         if not self._connected:

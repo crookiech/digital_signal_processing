@@ -1,37 +1,51 @@
 GLOBAL_QSS = """
-QWidget {
-    font-size: 16px;
+QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
+    width: 16px;
+    subcontrol-origin: border;
 }
+
+QDoubleSpinBox::up-button {
+    subcontrol-position: top right;
+}
+
+QDoubleSpinBox::down-button {
+    subcontrol-position: bottom right;
+}
+
 QGroupBox {
-    font-size: 16px;
     font-weight: bold;
     border: 1px solid #c0c0c0;
     border-radius: 6px;
     margin-top: 12px;
     padding-top: 8px;
 }
+
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
     padding: 0 6px;
     left: 10px;
 }
+
 QPushButton {
-    font-size: 16px;
     padding: 6px 16px;
     min-height: 22px;
+    background-color: #f0f0f0;
+    border: 1px solid #c0c0c0;
+    border-radius: 4px;
+    color: #000000;
 }
+
+QPushButton:hover {
+    background-color: #e0e0e0;
+}
+
 QComboBox, QDoubleSpinBox {
-    font-size: 16px;
     padding: 4px 6px;
     min-height: 22px;
 }
-QLabel {
-    font-size: 16px;
-}
+
 QPlainTextEdit {
-    font-size: 16px;
-    font-family: "Consolas", "Courier New", monospace;
     background-color: #ffffff;
     border: 1px solid #d0d0d0;
     border-radius: 4px;
@@ -46,6 +60,7 @@ QGroupBox {{
     padding-top: 10px;
     font-weight: bold;
 }}
+
 QGroupBox::title {{
     subcontrol-origin: margin;
     subcontrol-position: top left;
