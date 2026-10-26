@@ -1,6 +1,15 @@
 import pyvisa
 from PyQt6.QtCore import QObject, pyqtSignal
 
+VI_ATTR_ASRL_BAUD = 0x3FFF0001
+VI_ATTR_ASRL_DATA_BITS = 0x3FFF0002
+VI_ATTR_ASRL_PARITY = 0x3FFF0006
+VI_ATTR_ASRL_STOP_BITS = 0x3FFF0003
+VI_ATTR_ASRL_FLOW_CNTRL = 0x3FFF0005
+VI_ASRL_PAR_NONE = 0
+VI_ASRL_STOP_ONE = 10
+VI_ASRL_FLOW_NONE = 16
+
 class SerialWorker(QObject):
     response_received = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
@@ -13,14 +22,37 @@ class SerialWorker(QObject):
         self.instr = None
         self._running = False
 
+    def _get_rm(self):
+        if self.rm is None:
+            try:
+                self.rm = pyvisa.ResourceManager('@ivi')
+            except Exception:
+                self.rm = pyvisa.ResourceManager('@py')
+        return self.rm
+
     def open_port(self, port: str, baud: int = 0):
         try:
-            if self.rm is None:
+            rm = self._get_rm()
+            self.instr = rm.open_resource(port)
+
+            is_serial = port.upper().startswith("ASRL")
+
+            if is_serial:
+                if baud <= 0:
+                    baud = 9600
                 try:
-                    self.rm = pyvisa.ResourceManager('@ivi')
+                    self.instr.set_visa_attribute(VI_ATTR_ASRL_BAUD, int(baud))
+                    self.instr.set_visa_attribute(VI_ATTR_ASRL_DATA_BITS, 8)
+                    self.instr.set_visa_attribute(VI_ATTR_ASRL_PARITY, VI_ASRL_PAR_NONE)
+                    self.instr.set_visa_attribute(VI_ATTR_ASRL_STOP_BITS, VI_ASRL_STOP_ONE)
+                    self.instr.set_visa_attribute(VI_ATTR_ASRL_FLOW_CNTRL, VI_ASRL_FLOW_NONE)
                 except Exception:
-                    self.rm = pyvisa.ResourceManager('@py')
-            self.instr = self.rm.open_resource(port)
+                    if baud:
+                        try:
+                            self.instr.baud_rate = int(baud)
+                        except Exception:
+                            pass
+
             self.instr.timeout = 5000
             self.instr.read_termination = '\n'
             self.instr.write_termination = '\n'

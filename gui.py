@@ -9,7 +9,7 @@ class ChannelPanel(QGroupBox):
     set_v_requested = pyqtSignal(int, float)
     set_i_requested = pyqtSignal(int, float)
 
-    def __init__(self, ch: int, v_max=30.0, i_max=5.0, accent_key: str = "green"):
+    def __init__(self, ch: int, v_min=3.3, v_max=5.0, i_min=0.0, i_max=0.05, accent_key: str = "green"):
         super().__init__(f"CH{ch}")
         self.ch = ch
         self._accent_key = accent_key
@@ -19,17 +19,18 @@ class ChannelPanel(QGroupBox):
         layout.setHorizontalSpacing(10)
 
         self.v_spin = QDoubleSpinBox()
-        self.v_spin.setRange(0.0, v_max)
+        self.v_spin.setRange(v_min, v_max)
         self.v_spin.setDecimals(2)
         self.v_spin.setStepType(QDoubleSpinBox.StepType.DefaultStepType)
-        self.v_spin.setSingleStep(0.1)
+        self.v_spin.setSingleStep(0.01)
         self.v_spin.setSuffix(" В")
+        self.v_spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.UpDownArrows)
 
         self.i_spin = QDoubleSpinBox()
-        self.i_spin.setRange(0.0, i_max)
-        self.i_spin.setDecimals(2)
+        self.i_spin.setRange(i_min, i_max)
+        self.i_spin.setDecimals(3)
         self.i_spin.setStepType(QDoubleSpinBox.StepType.DefaultStepType)
-        self.i_spin.setSingleStep(0.1)
+        self.i_spin.setSingleStep(0.001)
         self.i_spin.setSuffix(" А")
 
         btn_v = QPushButton("Установить")
@@ -38,15 +39,31 @@ class ChannelPanel(QGroupBox):
         btn_i.clicked.connect(lambda: self.set_i_requested.emit(self.ch, self.i_spin.value()))
 
         row_v = QHBoxLayout(); row_v.addWidget(self.v_spin, 1); row_v.addWidget(btn_v)
+        row_v.setSpacing(8)
         row_i = QHBoxLayout(); row_i.addWidget(self.i_spin, 1); row_i.addWidget(btn_i)
+        row_i.setSpacing(8)
 
-        layout.addRow("Напряжение:", row_v)
-        layout.addRow("Ток:", row_i)
+        lbl_v = QLabel(
+            f'Напряжение:<br>'
+            f'<span style="color:#808080">{v_min}-{v_max} В</span>'
+        )
+        lbl_v.setTextFormat(Qt.TextFormat.RichText)
+        lbl_v.setWordWrap(True)
+
+        lbl_i = QLabel(
+            f'Ток:<br>'
+            f'<span style="color:#808080">{i_min}-{i_max} А</span>'
+        )
+        lbl_i.setTextFormat(Qt.TextFormat.RichText)
+        lbl_i.setWordWrap(True)
+
+        layout.addRow(lbl_v, row_v)
+        layout.addRow(lbl_i, row_i)
+
         self.setLayout(layout)
 
         border = CHANNEL_COLORS[accent_key]
         self.setStyleSheet(CHANNEL_STYLE_TEMPLATE.format(border=border))
-
 
 class MainWindow(QMainWindow):
     sig_open = pyqtSignal(str, int)
@@ -80,15 +97,31 @@ class MainWindow(QMainWindow):
         conn_layout = QFormLayout()
         conn_layout.setVerticalSpacing(8)
         conn_layout.setHorizontalSpacing(10)
+        self.conn_layout = conn_layout
+
+        self.cmb_iface = QComboBox()
+        self.cmb_iface.addItem("USB", "USB")
+        self.cmb_iface.addItem("RS232", "ASRL")
+        self.cmb_iface.currentIndexChanged.connect(self.on_iface_changed)
+        conn_layout.addRow("Интерфейс:", self.cmb_iface)
+        conn_layout.setSpacing(8)
 
         port_row = QHBoxLayout()
         self.port_combo = QComboBox()
-        self.refresh_ports()
         btn_refresh = QPushButton("Обновить")
         btn_refresh.clicked.connect(self.refresh_ports)
         port_row.addWidget(self.port_combo, 1)
         port_row.addWidget(btn_refresh)
         conn_layout.addRow("Порт:", port_row)
+
+        baud_row = QHBoxLayout()
+        self.baud_combo = QComboBox()
+        for b in (9600, 19200, 38400, 57600, 115200):
+            self.baud_combo.addItem(str(b), b)
+        self.baud_combo.setCurrentText("9600")
+        baud_row.addWidget(self.baud_combo, 1)
+        conn_layout.addRow("Бод:", baud_row)
+        self.baud_row = baud_row
 
         connect_row = QHBoxLayout()
         self.btn_connect = QPushButton("Подключить")
@@ -164,6 +197,8 @@ class MainWindow(QMainWindow):
         self.shortcut_ctrl_c = QShortcut(QKeySequence("Ctrl+C"), self)
         self.shortcut_ctrl_c.activated.connect(self.close)
 
+        self.on_iface_changed()
+
     def _set_status(self, state: str, text: str | None = None):
         cfg = STATUS_COLORS[state]
         self.lbl_status.setText(text if text is not None else cfg["text"])
@@ -173,30 +208,26 @@ class MainWindow(QMainWindow):
             )
         )
 
-    def refresh_ports(self):
-        self.port_combo.clear()
-        if not self.rm:
-            self.port_combo.addItem("VISA не инициализирован", None)
-            return
-        try:
-            resources = self.rm.list_resources()
-            usb_instrs = [r for r in resources if 'USB' in r and 'INSTR' in r]
-            for res in usb_instrs:
-                self.port_combo.addItem(res, res)
-            if not usb_instrs:
-                self.port_combo.addItem("Нет USB-инструментов", None)
-        except Exception as e:
-            print(f"Ошибка поиска ресурсов: {e}")
-            self.port_combo.addItem("Ошибка поиска", None)
-
     def on_connect_toggled(self, checked: bool):
         if checked:
             port = self.port_combo.currentData()
             if not port:
-                QMessageBox.warning(self, "Ошибка", "выберите USB-инструмент")
+                QMessageBox.warning(self, "Ошибка", "выберите порт")
                 self.btn_connect.setChecked(False)
                 return
-            self.sig_open.emit(port, 0)
+
+            iface = self.cmb_iface.currentData()
+            baud = self.baud_combo.currentData() if iface == "ASRL" else 0
+
+            if iface == "ASRL" and port.upper().startswith("COM"):
+                try:
+                    num = port[3:]
+                    port = f"ASRL{num}::INSTR"
+                except Exception:
+                    pass
+
+            self.append_log(f"Подключение к {port}...")
+            self.sig_open.emit(port, baud)
         else:
             self.sig_close.emit()
             self.poll_timer.stop()
@@ -209,6 +240,7 @@ class MainWindow(QMainWindow):
             self.poll_timer.start()
             self.append_log(f"Подключено к {port}")
         else:
+            was_connected = self._connected
             self._connected = False
             self._set_status("disconnected")
             self.btn_connect.blockSignals(True)
@@ -216,21 +248,25 @@ class MainWindow(QMainWindow):
             self.btn_connect.blockSignals(False)
             self.btn_connect.setText("Подключить")
             self.poll_timer.stop()
-            self.append_log(f"Отключено от {port}")
+
+            if was_connected:
+                self.append_log(f"Отключено от {port}")
+            else:
+                self.append_log(f"Не удалось подключиться к {port}")
 
     def on_set_v(self, ch: int, value: float):
         if not self._connected:
             self.on_error(f"не удалось установить напряжение CH{ch}, нет подключения")
             return
         self.sig_set_v.emit(ch, value)
-        self.append_log(f"CH{ch}: напряжение установлено {value:.2f} В")
+        self.append_log(f"CH{ch}: установлено напряжение {value:.2f} В")
 
     def on_set_i(self, ch: int, value: float):
         if not self._connected:
             self.on_error(f"не удалось установить ток CH{ch}, нет подключения")
             return
         self.sig_set_i.emit(ch, value)
-        self.append_log(f"CH{ch}: ток установлен {value:.2f} А")
+        self.append_log(f"CH{ch}: установлен ток {value:.2f} А")
 
     def on_output_toggled(self, checked: bool):
         if not self._connected:
@@ -270,3 +306,41 @@ class MainWindow(QMainWindow):
         self.thread.quit()
         self.thread.wait(1000)
         super().closeEvent(event)
+
+    def on_iface_changed(self):
+        is_serial = self.cmb_iface.currentData() == "ASRL"
+        self.conn_layout.setRowVisible(self.baud_row, is_serial)
+        self.refresh_ports()
+    
+    def refresh_ports(self):
+        iface = self.cmb_iface.currentData() if hasattr(self, "cmb_iface") else "USB"
+
+        self.append_log("Обновление портов...")
+
+        self.port_combo.clear()
+
+        if not self.rm:
+            self.port_combo.addItem("VISA не инициализирован", None)
+            return
+
+        try:
+            resources = self.rm.list_resources()
+        except Exception as e:
+            print(f"Ошибка поиска ресурсов: {e}")
+            self.port_combo.addItem("Ошибка поиска", None)
+            return
+
+        if iface == "USB":
+            filtered = [r for r in resources if 'USB' in r and 'INSTR' in r]
+            empty_text = "Нет USB-инструментов"
+        else:
+            filtered = [r for r in resources if r.upper().startswith("ASRL")]
+            empty_text = "Нет COM-портов"
+
+        for res in filtered:
+            self.port_combo.addItem(res, res)
+
+        if not filtered:
+            self.port_combo.addItem(empty_text, None)
+        
+        self.append_log("Порты обновлены")

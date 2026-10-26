@@ -1,15 +1,15 @@
 GLOBAL_QSS = """
-QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
-    width: 16px;
-    subcontrol-origin: border;
-}
 
 QDoubleSpinBox::up-button {
+    subcontrol-origin: border;
     subcontrol-position: top right;
+    width: 16px;
 }
 
 QDoubleSpinBox::down-button {
+    subcontrol-origin: border;
     subcontrol-position: bottom right;
+    width: 16px;
 }
 
 QGroupBox {
@@ -30,7 +30,7 @@ QGroupBox::title {
 QPushButton {
     padding: 6px 16px;
     min-height: 22px;
-    background-color: #f0f0f0;
+    background-color: #ffffff;
     border: 1px solid #c0c0c0;
     border-radius: 4px;
     color: #000000;
@@ -40,9 +40,16 @@ QPushButton:hover {
     background-color: #e0e0e0;
 }
 
-QComboBox, QDoubleSpinBox {
+QDoubleSpinBox {
     padding: 4px 6px;
     min-height: 22px;
+    border-radius: 6px;
+}
+
+QComboBox {
+    padding: 4px 6px;
+    min-height: 22px;
+    border-radius: 6px;
 }
 
 QPlainTextEdit {
