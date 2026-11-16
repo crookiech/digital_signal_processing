@@ -1,3 +1,7 @@
 venv/
 __pycache__/
 .vscode/
+.venv/
+./tests
+.lan_restore.json
+.lan_restore.json.tmp

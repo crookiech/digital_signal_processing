@@ -1,0 +1,4 @@
+PyQt6
+PyVISA
+PyVISA-py
+scapy

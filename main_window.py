@@ -1,19 +1,21 @@
 import time
+import sys
+from ipaddress import IPv4Address, IPv4Network
 from datetime import datetime
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QComboBox, 
                              QTableWidget, QTableWidgetItem, QMessageBox, 
                              QGroupBox, QRadioButton, QFormLayout, QHeaderView, 
-                             QCheckBox, QFileDialog, QGridLayout)
-from PyQt6.QtCore import Qt, QSettings
+                             QCheckBox, QFileDialog, QGridLayout, QScrollArea)
+from PyQt6.QtCore import Qt, QSettings, QTimer
 from dhcp_server import MiniDhcpServer
-from scapy.arch.windows import get_windows_if_list # Для получения имен интерфейсов
 
 
 import pyvisa
 from instrument_worker import MeasurementWorker
 from dialogs import OptionsDialog, FunctionDialog, MathDialog
-from network_utils import get_pc_network_info
+from network_utils import LanConfigurator, list_adapters
+from lan_workers import OperationWorker, open_instrument, prepare_lan
 
 class MultimeterApp(QMainWindow):
     def __init__(self):
@@ -25,6 +27,15 @@ class MultimeterApp(QMainWindow):
         self.rm = None
         self.is_connected = False
         self.dhcp_server = None # Ссылка на запущенный DHCP-сервер
+        self.dhcp_timer = QTimer(self)
+        self.dhcp_timer.setInterval(500)
+        self.dhcp_timer.timeout.connect(self.check_dhcp_status)
+        self._dhcp_status = ""
+        self.lan_configurator = LanConfigurator()
+        self.lan_plan = None
+        self.operation = None
+        self._close_after_restore = False
+        self._last_dhcp_message = ""
         
         self.measure_interval = 100 
         self.max_points = 10000     
@@ -37,6 +48,8 @@ class MultimeterApp(QMainWindow):
         self.init_ui()
         self.check_visa_backends()
         self.load_settings()
+        self.btn_restore_lan.setEnabled(self.lan_configurator.has_backup())
+        QTimer.singleShot(0, self.refresh_adapters)
 
     def init_ui(self):
         central = QWidget()
@@ -60,25 +73,46 @@ class MultimeterApp(QMainWindow):
 
         self.lan_group = QGroupBox("LAN Настройки")
         lan_form = QFormLayout()
-        self.ip_edit = QLineEdit("192.168.1.100")
-        self.mask_edit = QLineEdit("255.255.255.0")
-        self.gateway_edit = QLineEdit("192.168.1.1")
-
-        self.btn_get_pc_ip = QPushButton("Взять с этого ПК")
-        self.btn_get_pc_ip.clicked.connect(self.fill_pc_network_info)
-
-        self.btn_start_dhcp = QPushButton("Запустить DHCP-сервер")
+        self.adapter_combo = QComboBox()
+        self.adapter_combo.setMinimumContentsLength(18)
+        self.adapter_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.btn_refresh_adapters = QPushButton("Обновить адаптеры")
+        self.btn_refresh_adapters.clicked.connect(self.refresh_adapters)
+        self.pc_ip_edit = QLineEdit()
+        self.pc_ip_edit.setReadOnly(True)
+        self.pc_ip_edit.setPlaceholderText("Будет определён при настройке LAN")
+        self.ip_edit = QLineEdit()
+        self.ip_edit.setPlaceholderText("Адрес с экрана прибора или из DHCP")
+        self.mask_edit = QLineEdit()
+        self.mask_edit.setReadOnly(True)
+        self.gateway_edit = QLineEdit()
+        self.gateway_edit.setReadOnly(True)
+        self.lease_combo = QComboBox()
+        self.lease_combo.setMinimumContentsLength(18)
+        self.lease_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.lease_combo.currentIndexChanged.connect(self.select_lease)
+        self.lan_state = QLabel("Выберите Ethernet и нажмите «Настроить LAN».")
+        self.lan_state.setWordWrap(True)
+        self.lan_state.setMinimumHeight(96)
+        self.btn_start_dhcp = QPushButton("Настроить LAN")
         self.btn_start_dhcp.clicked.connect(self.toggle_dhcp_server)
 
         self.btn_update_ip = QPushButton("Обновить IP из DHCP")
         self.btn_update_ip.clicked.connect(self.update_ip_from_dhcp)
+        self.btn_restore_lan = QPushButton("Восстановить Ethernet")
+        self.btn_restore_lan.clicked.connect(self.restore_lan)
         
-        lan_form.addRow("IP Address:", self.ip_edit)
+        lan_form.addRow("Ethernet:", self.adapter_combo)
+        lan_form.addRow("", self.btn_refresh_adapters)
+        lan_form.addRow("IP ПК:", self.pc_ip_edit)
         lan_form.addRow("Маска:", self.mask_edit)
         lan_form.addRow("Шлюз:", self.gateway_edit)
-        lan_form.addRow("", self.btn_get_pc_ip)
         lan_form.addRow("", self.btn_start_dhcp)
+        lan_form.addRow("Выданные адреса:", self.lease_combo)
+        lan_form.addRow("IP мультиметра:", self.ip_edit)
         lan_form.addRow("", self.btn_update_ip)
+        lan_form.addRow("", self.btn_restore_lan)
+        lan_form.addRow(self.lan_state)
         self.lan_group.setLayout(lan_form)
 
 
@@ -147,7 +181,14 @@ class MultimeterApp(QMainWindow):
         left_panel.addWidget(self.btn_start)
         left_panel.addWidget(self.btn_stop)
         left_panel.addStretch()
-        main_layout.addLayout(left_panel, 1)
+        left_widget = QWidget()
+        left_widget.setLayout(left_panel)
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll.setMinimumWidth(390)
+        left_scroll.setWidget(left_widget)
+        main_layout.addWidget(left_scroll, 1)
 
         right_panel = QVBoxLayout()
         display_group = QGroupBox("Показания")
@@ -189,9 +230,7 @@ class MultimeterApp(QMainWindow):
         self.radio_rs232.toggled.connect(self.update_interface_fields)
 
     def load_settings(self):
-        self.ip_edit.setText(self.settings.value("lan/ip", "192.168.1.100"))
-        self.mask_edit.setText(self.settings.value("lan/mask", "255.255.255.0"))
-        self.gateway_edit.setText(self.settings.value("lan/gateway", "192.168.1.1"))
+        self.ip_edit.setText(self.settings.value("lan/ip", ""))
         
         iface = self.settings.value("conn/interface", "USB")
         if iface == "LAN": self.radio_lan.setChecked(True)
@@ -200,8 +239,7 @@ class MultimeterApp(QMainWindow):
 
     def save_settings(self):
         self.settings.setValue("lan/ip", self.ip_edit.text())
-        self.settings.setValue("lan/mask", self.mask_edit.text())
-        self.settings.setValue("lan/gateway", self.gateway_edit.text())
+        self.settings.setValue("lan/adapter", self.adapter_combo.currentData())
         
         if self.radio_lan.isChecked(): self.settings.setValue("conn/interface", "LAN")
         elif self.radio_rs232.isChecked(): self.settings.setValue("conn/interface", "RS232")
@@ -223,77 +261,224 @@ class MultimeterApp(QMainWindow):
         if self.radio_rs232.isChecked() and self.combo_com.count() == 0:
             self.refresh_com_ports()
 
-    def toggle_dhcp_server(self):
-        if self.dhcp_server is None:
-            # Запуск сервера
-            try:
-                from scapy.arch.windows import get_windows_if_list
-                
-                # Получаем IP-адрес, который введен в GUI
-                pc_ip = self.ip_edit.text().strip()
+    def set_lan_message(self, message):
+        self.lan_state.setText(message)
+        self.statusBar().showMessage(message)
 
-                interfaces = get_windows_if_list()
-                target_iface = None
+    def update_controls(self):
+        busy = self.operation is not None
+        prepared = self.lan_plan is not None
+        self.adapter_combo.setEnabled(not busy and not prepared)
+        self.btn_refresh_adapters.setEnabled(not busy and not prepared)
+        self.btn_start_dhcp.setEnabled(not busy and not self.is_connected)
+        self.btn_restore_lan.setEnabled(
+            not busy and (prepared or self.lan_configurator.has_backup()))
+        self.btn_update_ip.setEnabled(not busy and self.dhcp_server is not None)
+        self.lease_combo.setEnabled(not busy and not self.is_connected)
+        self.ip_edit.setEnabled(not busy and not self.is_connected)
+        self.btn_connect.setEnabled(not busy)
+        for radio in (self.radio_usb, self.radio_lan, self.radio_rs232):
+            radio.setEnabled(not busy and not self.is_connected and not prepared)
+        self.btn_start.setEnabled(not busy and self.is_connected and self.worker is None)
 
-                for iface in interfaces:
-                    # В scapy ips — это список строк
-                    if pc_ip in iface.get('ips', []):
-                        target_iface = iface['name']
-                        print(f"Найден интерфейс по IP: {target_iface}")
-                        break
-                
-                # Если не нашли по IP, ищем по описанию (исключая WSL и виртуальные)
-                if not target_iface:
-                    for iface in interfaces:
-                        desc = iface.get('description', '')
-                        name = iface.get('name', '')
-                        if ('Realtek' in desc or 'Intel' in desc) and 'WSL' not in name and 'Virtual' not in desc:
-                            target_iface = name
-                            print(f"Найден интерфейс по описанию: {target_iface} ({desc})")
-                            break
+    def run_operation(self, operation, on_success, on_error=None):
+        if self.operation is not None:
+            return
+        worker = OperationWorker(operation, self)
+        self.operation = worker
+        worker.succeeded.connect(on_success)
+        worker.failed.connect(on_error or self.operation_failed)
+        worker.finished.connect(self.operation_finished)
+        self.update_controls()
+        worker.start()
 
-                if not target_iface:
-                    QMessageBox.warning(self, "Ошибка", "Не найден физический Ethernet-адаптер.")
-                    return
+    def operation_finished(self):
+        worker = self.operation
+        self.operation = None
+        if worker:
+            worker.deleteLater()
+        self.update_controls()
+        if self._close_after_restore and not self.lan_configurator.has_backup():
+            self._close_after_restore = False
+            self.close()
 
-                # Настройки пула (например, от 192.168.1.150 до 192.168.1.200)
-                # Берем первые три октета из IP-адреса ПК
-                pc_ip = self.ip_edit.text().strip().rsplit('.', 1)[0]
-                pool_start = f"{pc_ip}.150"
-                pool_end = f"{pc_ip}.200"
-                mask = self.mask_edit.text().strip()
-                gateway = self.gateway_edit.text().strip()
+    def operation_failed(self, message):
+        self._close_after_restore = False
+        self.set_lan_message(message)
+        QMessageBox.warning(self, "Ошибка LAN", message)
 
-                self.dhcp_server = MiniDhcpServer(
-                    interface=target_iface,
-                    pool_start=pool_start,
-                    pool_end=pool_end,
-                    subnet_mask=mask,
-                    gateway=gateway
-                )
-                self.dhcp_server.start()
-                
-                self.btn_start_dhcp.setText("Остановить DHCP")
-                self.statusBar().showMessage(f"DHCP-сервер запущен на {target_iface} (Пул: {pool_start}-{pool_end})")
-                
-            except Exception as e:
-                QMessageBox.critical(self, "Ошибка DHCP", f"Не удалось запустить сервер: {e}")
-                self.dhcp_server = None
+    def refresh_adapters(self):
+        if self.operation is not None or self.lan_plan is not None:
+            return
+        self.set_lan_message("Поиск Ethernet-адаптеров…")
+        self.run_operation(list_adapters, self.adapters_loaded)
+
+    def adapters_loaded(self, adapters):
+        previous = self.adapter_combo.currentData() or self.settings.value("lan/adapter", "")
+        self.adapter_combo.clear()
+        ethernet = [item for item in adapters if item["ethernet"] and item["guid"]]
+        for adapter in ethernet:
+            ips = ", ".join(a["ip"] for a in adapter["addresses"]) or "нет IPv4"
+            state = "кабель подключён" if adapter["connected"] else "нет кабеля"
+            self.adapter_combo.addItem(f"{adapter['name']} — {ips}, {state}", adapter["guid"])
+            self.adapter_combo.setItemData(
+                self.adapter_combo.count() - 1,
+                f"{adapter.get('description', adapter['name'])}\n{ips}\n{state}",
+                Qt.ItemDataRole.ToolTipRole)
+        active = [a for a in ethernet if a["connected"]]
+        remembered = self.adapter_combo.findData(previous)
+        if remembered >= 0:
+            self.adapter_combo.setCurrentIndex(remembered)
+        elif len(active) == 1:
+            self.adapter_combo.setCurrentIndex(self.adapter_combo.findData(active[0]["guid"]))
         else:
-            # Остановка сервера
+            self.adapter_combo.setCurrentIndex(-1)
+        if self.lan_configurator.has_backup():
+            self.set_lan_message("Есть сохранённые настройки Ethernet. Нажмите «Восстановить Ethernet» перед новой настройкой.")
+        elif ethernet:
+            self.set_lan_message("Выберите Ethernet с кабелем мультиметра и нажмите «Настроить LAN».")
+        else:
+            self.set_lan_message("Физический Ethernet-адаптер не найден.")
+
+    def toggle_dhcp_server(self):
+        if self.dhcp_server is not None:
+            self.stop_dhcp()
+            self.set_lan_message("DHCP остановлен. Настройки IP ПК сохраняются до восстановления Ethernet.")
+            return
+        if self.lan_plan is not None:
+            self.start_dhcp(self.lan_plan)
+            return
+        guid = self.adapter_combo.currentData()
+        if not guid:
+            QMessageBox.information(self, "Ethernet", "Выберите Ethernet-адаптер с кабелем мультиметра.")
+            return
+        self.set_lan_message("Подготовка IPv4 выбранного Ethernet…")
+        self.run_operation(lambda: prepare_lan(self.lan_configurator, guid), self.start_dhcp)
+
+    def start_dhcp(self, plan):
+        self.lan_plan = plan
+        index = self.adapter_combo.findData(plan["adapter"]["guid"])
+        if index >= 0:
+            self.adapter_combo.setItemText(
+                index, f"{plan['adapter']['name']} — {plan['server_ip']}, кабель подключён")
+        self.pc_ip_edit.setText(plan["server_ip"])
+        self.mask_edit.setText(plan["mask"])
+        self.gateway_edit.setText(plan["gateway"])
+        self.ip_edit.clear()
+        self.lease_combo.clear()
+        self._last_dhcp_message = ""
+        self._dhcp_status = (
+            f"DHCP на {plan['adapter']['name']}, IP ПК: {plan['server_ip']} "
+            f"(пул: {plan['pool_start']}–{plan['pool_end']})"
+        )
+        try:
+            self.dhcp_server = MiniDhcpServer(
+                interface=plan["capture_interface"], pool_start=plan["pool_start"],
+                pool_end=plan["pool_end"], subnet_mask=plan["mask"],
+                gateway=plan["gateway"], server_ip=plan["server_ip"],
+            )
+            self.dhcp_server.start()
+            self.btn_start_dhcp.setText("Остановить DHCP")
+            self.set_lan_message(self._dhcp_status + ". Запуск…")
+            self.dhcp_timer.start()
+        except Exception as exc:
+            self.dhcp_server = None
+            # Defer until the preparation worker has fully finished.
+            QTimer.singleShot(0, lambda message=str(exc): self.dhcp_failed(message))
+        self.update_controls()
+
+    def stop_dhcp(self):
+        self.dhcp_timer.stop()
+        if self.dhcp_server:
             self.dhcp_server.stop()
             self.dhcp_server = None
-            self.btn_start_dhcp.setText("Запустить DHCP-сервер")
-            self.statusBar().showMessage("DHCP-сервер остановлен.")
+        self.btn_start_dhcp.setText("Запустить DHCP" if self.lan_plan else "Настроить LAN")
+        self.update_controls()
+
+    def dhcp_failed(self, message):
+        if self.operation is not None:
+            QTimer.singleShot(100, lambda: self.dhcp_failed(message))
+            return
+        self.disconnect_instrument()
+        self.stop_dhcp()
+        self.set_lan_message(f"Ошибка DHCP: {message}. Восстановление Ethernet…")
+        def restored(_):
+            self.lan_restored(None)
+            self.operation_failed(f"DHCP не запущен: {message}. Исходные настройки Ethernet восстановлены.")
+        self.run_operation(self.lan_configurator.restore, restored)
+
+    def check_dhcp_status(self):
+        server = self.dhcp_server
+        if server is None:
+            return
+        if server.error or not server.is_alive():
+            self.dhcp_failed(server.error or "Поток DHCP-сервера завершился.")
+            return
+        if not server.running:
+            return
+        leases = server.get_leases()
+        entries = [(mac, ip) for mac, ip in leases.items()]
+        previous = self.lease_combo.currentData()
+        existing = [self.lease_combo.itemData(i) for i in range(self.lease_combo.count())]
+        if entries != existing:
+            self.lease_combo.blockSignals(True)
+            self.lease_combo.clear()
+            for mac, ip in entries:
+                self.lease_combo.addItem(f"{ip} — {mac}", (mac, ip))
+            if previous in entries:
+                self.lease_combo.setCurrentIndex(entries.index(previous))
+            elif len(entries) != 1:
+                self.lease_combo.setCurrentIndex(-1)
+            self.lease_combo.blockSignals(False)
+            if not self.is_connected:
+                self.select_lease()
+        suffix = (
+            "Адрес выдан. Нажмите «Подключиться» для проверки прибора."
+            if leases else "Ожидание запроса. На мультиметре включите DHCP и нажмите Apply."
+        )
+        message = f"{self._dhcp_status}. {suffix}"
+        if not self.is_connected and self.operation is None and message != self._last_dhcp_message:
+            self.set_lan_message(message)
+            self._last_dhcp_message = message
+
+    def select_lease(self, index=None):
+        if not self.is_connected:
+            selected = self.lease_combo.currentData()
+            if selected:
+                self.ip_edit.setText(selected[1])
 
     def update_ip_from_dhcp(self):
-        if self.dhcp_server and self.dhcp_server.leases:
-            # Берем первый выданный IP (предполагая, что это мультиметр)
-            last_ip = list(self.dhcp_server.leases.values())[-1]
-            self.ip_edit.setText(last_ip)
-            self.statusBar().showMessage(f"IP-адрес обновлен из DHCP: {last_ip}")
+        self.check_dhcp_status()
+        selected = self.lease_combo.currentData()
+        if selected:
+            self.select_lease()
         else:
-            QMessageBox.warning(self, "Ошибка", "DHCP-сервер не запущен или еще не выдал адреса.")
+            QMessageBox.information(
+                self, "DHCP", "Адрес ещё не выдан либо нужно выбрать клиента в списке. "
+                "Включите DHCP на мультиметре и примените настройку кнопкой Apply.")
+
+    def restore_lan(self):
+        if self.operation is not None:
+            return
+        self.disconnect_instrument()
+        self.stop_dhcp()
+        self.set_lan_message("Восстановление исходных настроек Ethernet…")
+        self.run_operation(self.lan_configurator.restore, self.lan_restored)
+
+    def lan_restored(self, result):
+        if self.lan_plan:
+            adapter = self.lan_plan["adapter"]
+            index = self.adapter_combo.findData(adapter["guid"])
+            if index >= 0:
+                self.adapter_combo.setItemText(index, f"{adapter['name']} — настройки восстановлены")
+        self.lan_plan = None
+        self.pc_ip_edit.clear()
+        self.mask_edit.clear()
+        self.gateway_edit.clear()
+        self.ip_edit.clear()
+        self.lease_combo.clear()
+        self.btn_start_dhcp.setText("Настроить LAN")
+        self.set_lan_message("Исходные настройки Ethernet восстановлены.")
 
     def check_visa_backends(self):
         try:
@@ -334,43 +519,61 @@ class MultimeterApp(QMainWindow):
         return None
 
     def toggle_connection(self):
-        if not self.is_connected:
-            res_name = self.get_resource_name()
-            if not res_name:
-                QMessageBox.warning(self, "Ошибка", "Ресурс не найден.")
-                return
-            try:
-                self.instrument = self.rm.open_resource(res_name)
-                self.instrument.timeout = 5000
-                self.instrument.read_termination = '\n'
-                self.instrument.write_termination = '\n'
-                
-                self.current_func = "VOLT:DC"
-                self.instrument.write("CONF:VOLT:DC")
-                self.instrument.write("VOLT:DC:RANG:AUTO ON")
-                self.instrument.write("VOLT:DC:IMP:AUTO ON") 
-                
-                self.btn_connect.setText("Отключиться")
-                self.btn_start.setEnabled(True)
-                self.is_connected = True
-                self.statusBar().showMessage(f"Подключено: {res_name}")
-                
-                self.change_range()
-                self.change_speed()
-                self.change_impedance()
-            except Exception as e:
-                QMessageBox.critical(self, "Ошибка", str(e))
-        else:
-            self.stop_measurement()
+        if self.is_connected:
+            self.disconnect_instrument()
+            return
+        try:
+            if self.radio_lan.isChecked():
+                ip = IPv4Address(self.ip_edit.text().strip())
+                if self.lan_plan:
+                    network = IPv4Network(f"{self.lan_plan['server_ip']}/{self.lan_plan['mask']}", strict=False)
+                    if ip not in network or str(ip) == self.lan_plan["server_ip"]:
+                        raise ValueError("IP мультиметра должен отличаться от IP ПК и находиться в той же подсети.")
+            resource_name = self.get_resource_name()
+            if not resource_name:
+                raise ValueError("Ресурс не найден.")
+        except Exception as exc:
+            QMessageBox.warning(self, "Подключение", str(exc))
+            return
+        is_lan = self.radio_lan.isChecked()
+        self.set_lan_message(f"Проверка прибора (*IDN?): {resource_name}…")
+        self.run_operation(
+            lambda: open_instrument(self.rm, resource_name, require_ut8805e=is_lan),
+            lambda result: self.instrument_connected(result, resource_name),
+            lambda message: self.operation_failed(
+                f"Не удалось завершить подключение к {resource_name}.\n{message}"),
+        )
+
+    def instrument_connected(self, result, resource_name):
+        self.instrument, identity = result
+        self.current_func = "VOLT:DC"
+        self.is_connected = True
+        self.btn_connect.setText("Отключиться")
+        self.set_lan_message(f"Подключён {identity} ({resource_name})")
+        try:
+            self.change_range()
+            self.change_speed()
+            self.change_impedance()
+        except Exception as exc:
+            self.disconnect_instrument()
+            self.operation_failed(str(exc))
+
+    def disconnect_instrument(self):
+        self.stop_measurement()
+        if self.instrument:
             try:
                 self.instrument.write("*UNREMOTE")
+            except Exception:
+                pass
+            try:
                 self.instrument.close()
-            except: pass
-            self.instrument = None
-            self.btn_connect.setText("Подключиться")
-            self.btn_start.setEnabled(False)
-            self.is_connected = False
-            self.statusBar().showMessage("Отключено")
+            except Exception:
+                pass
+        self.instrument = None
+        self.is_connected = False
+        self.btn_connect.setText("Подключиться")
+        self.update_controls()
+        self.statusBar().showMessage("Отключено")
 
     def open_function_dialog(self):
         if not self.instrument: return
@@ -494,46 +697,18 @@ class MultimeterApp(QMainWindow):
         self.stop_measurement()
 
     def closeEvent(self, event):
-        self.save_settings()
-        self.stop_measurement()
-
-        if self.dhcp_server:
-            self.dhcp_server.stop()
-            self.dhcp_server = None
-            
-        if self.instrument:
-            try:
-                self.instrument.write("*UNREMOTE")
-                self.instrument.close()
-            except: pass
-        event.accept()
-    
-    def fill_pc_network_info(self):
-        ip, mask, gateway = get_pc_network_info()
-        
-        if ip == "Не определен":
-            QMessageBox.warning(self, "Ошибка", "Не удалось определить сетевые настройки ПК. Проверьте подключение к сети.")
+        if self.operation is not None:
+            event.ignore()
+            self.statusBar().showMessage("Дождитесь завершения операции, затем закройте окно.")
             return
-
-        try:
-            ip_parts = ip.split('.')
-            recommended_device_ip = f"{ip_parts[0]}.{ip_parts[1]}.{ip_parts[2]}.100"
-        except:
-            recommended_device_ip = "192.168.1.100"
-
-        self.ip_edit.setText(recommended_device_ip)
-        self.mask_edit.setText(mask)
-        self.gateway_edit.setText(gateway)
-        
-        msg = (
-            f"Настройки вашего ПК:\n"
-            f"IP: {ip}\n"
-            f"Маска: {mask}\n"
-            f"Шлюз: {gateway}\n\n"
-            f"Для успешного подключения к мультиметру, убедитесь, что он находится в той же подсети.\n"
-            f"Рекомендуется установить на мультиметре (в его меню):\n"
-            f"IP: {recommended_device_ip}\n"
-            f"Маска: {mask}\n"
-            f"Шлюз: {gateway}\n\n"
-        )
-        QMessageBox.information(self, "Подсказка по сети", msg)
+        if self.lan_configurator.has_backup():
+            event.ignore()
+            self._close_after_restore = True
+            self.restore_lan()
+            return
+        self.save_settings()
+        self.disconnect_instrument()
+        self.stop_dhcp()
+        if self.rm:
+            self.rm.close()
+        event.accept()

@@ -21,7 +21,16 @@ class MeasurementWorker(QThread):
         while self._is_running:
             try:
                 raw = self.instrument.query('READ?')
-                val = float(raw.strip())
+                response = raw.strip()
+                if not response:
+                    raise ValueError(
+                        f"READ? вернул пустой ответ: {raw!r}. "
+                        "Результат измерения не получен."
+                    )
+                try:
+                    val = float(response)
+                except ValueError as exc:
+                    raise ValueError(f"READ? вернул нечисловой ответ: {raw!r}") from exc
                 
                 if self.skip_repeats:
                     if self.last_val is not None and abs(val - self.last_val) < 1e-9:

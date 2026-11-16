@@ -1,8 +1,7 @@
 import ctypes
 import sys
 import os
-from PyQt6.QtWidgets import QApplication
-from main_window import MultimeterApp
+import subprocess
 
 def is_admin():
     try:
@@ -17,7 +16,7 @@ if not is_admin():
     
     # Формируем команду для запуска python.exe с нашим скриптом
     # sys.executable — это путь к python.exe (даже под отладчиком это работает)
-    params = f'"{script}"'
+    params = subprocess.list2cmdline([script, *sys.argv[1:]])
     
     # Запускаем новый процесс от имени администратора
     # lpVerb="runas" вызывает UAC
@@ -27,7 +26,7 @@ if not is_admin():
         "runas", 
         sys.executable, 
         params, 
-        None, 
+        os.path.dirname(script),
         1
     )
     
@@ -39,6 +38,10 @@ if not is_admin():
     sys.exit(0)
 
 if __name__ == '__main__':
+    # Load Npcap only after elevation, including installations restricted to admins.
+    from PyQt6.QtWidgets import QApplication
+    from main_window import MultimeterApp
+
     app = QApplication(sys.argv)
     window = MultimeterApp()
     window.show()
