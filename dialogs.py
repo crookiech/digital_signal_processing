@@ -45,12 +45,23 @@ class FunctionDialog(QDialog):
         layout = QVBoxLayout(self)
         
         self.combo = QComboBox()
-        self.combo.addItems(["Voltage DC"])
+        self.combo.addItems(["Voltage DC", "Current DC", "Resistance"])
         layout.addWidget(self.combo)
         
         btn = QPushButton("OK")
         btn.clicked.connect(self.accept)
         layout.addWidget(btn)
+
+    def get_selected_function(self):
+        text = self.combo.currentText()
+        if "Voltage" in text:
+            return "VOLT:DC", "VDC"
+        elif "Current" in text:
+            return "CURR:DC", "ADC"
+        elif "Resistance" in text:
+            return "RES", "Ω"
+        return "VOLT:DC", "VDC"
+
 
 class MathDialog(QDialog):
     def __init__(self, instrument, parent=None):

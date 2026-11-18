@@ -2,6 +2,9 @@ import time
 import sys
 from ipaddress import IPv4Address, IPv4Network
 from datetime import datetime
+import os
+import subprocess
+import webbrowser
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QLineEdit, QComboBox, 
                              QTableWidget, QTableWidgetItem, QMessageBox, 
@@ -36,7 +39,10 @@ class MultimeterApp(QMainWindow):
         self.operation = None
         self._close_after_restore = False
         self._last_dhcp_message = ""
-        
+        self.is_logging_to_file = False
+        self.log_file = None
+        self.log_file_path = ""
+
         self.measure_interval = 100 
         self.max_points = 10000     
         self.is_infinite = True
@@ -209,15 +215,19 @@ class MultimeterApp(QMainWindow):
         log_buttons = QHBoxLayout()
         self.btn_clear_log = QPushButton("Очистить")
         self.btn_clear_log.clicked.connect(self.clear_log)
-        self.btn_save_log = QPushButton("Сохранить")
+        self.btn_save_log = QPushButton("Сохранить все предыдущие измерения")
         self.btn_save_log.clicked.connect(self.save_log)
+
+        self.btn_toggle_log = QPushButton("Начать запись в лог")
+        self.btn_toggle_log.clicked.connect(self.toggle_logging_to_file)
         log_buttons.addWidget(self.btn_clear_log)
         log_buttons.addWidget(self.btn_save_log)
+        log_buttons.addWidget(self.btn_toggle_log)
         log_layout.addLayout(log_buttons)
         
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["№", "Время", "Значение"])
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["№", "Время", "Значение", "Ед. изм."])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         log_layout.addWidget(self.table)
@@ -291,7 +301,7 @@ class MultimeterApp(QMainWindow):
         worker.finished.connect(self.operation_finished)
         self.update_controls()
         worker.start()
-
+    
     def operation_finished(self):
         worker = self.operation
         self.operation = None
@@ -490,12 +500,30 @@ class MultimeterApp(QMainWindow):
                 self.rm = pyvisa.ResourceManager('@py')
                 self.statusBar().showMessage("Используется pyvisa-py.")
             except Exception as e:
-                # Предлагаем скачать NI-VISA
-                msg = QMessageBox()
+                # Если не найден ни один бэкенд, ищем локальный установщик в папки drivers
+                installer_name = "ni-visa-installer.exe" # замените на точное имя вашего файла в папке drivers
+                base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+                installer_path = os.path.join(base_path, "drivers", installer_name)
+                
+                if os.path.exists(installer_path):
+                    try:
+                        # Автоматически запускаем установщик с правами администратора
+                        subprocess.Popen(f'powershell Start-Process "{installer_path}" -Verb RunAs', shell=True)
+                        QMessageBox.warning(
+                            self, "Ошибка VISA",
+                            "Драйвер NI-VISA не обнаружен в системе.\n\n"
+                            "Запущен локальный установщик из папки drivers. "
+                            "Установите NI-VISA, после чего перезапустите программу."
+                        )
+                        sys.exit(1)
+                    except Exception as sub_err:
+                        print(f"Не удалось запустить установщик NI-VISA: {sub_err}")
+                        
+                msg = QMessageBox(self)
                 msg.setIcon(QMessageBox.Icon.Critical)
                 msg.setWindowTitle("Ошибка VISA")
-                msg.setText("Не удалось загрузить бэкенд VISA.\n\n"
-                            "Для работы с USB/LAN необходим драйвер NI-VISA.")
+                msg.setText("Не удалось загрузить бэкенд VISA и установщик не найден в папке drivers.\n\n"
+                    "Для работы с USB/LAN необходим драйвер NI-VISA.")
                 download_btn = msg.addButton("Скачать NI-VISA", QMessageBox.ButtonRole.ActionRole)
                 msg.addButton("Выход", QMessageBox.ButtonRole.RejectRole)
                 msg.exec()
@@ -546,19 +574,24 @@ class MultimeterApp(QMainWindow):
 
     def instrument_connected(self, result, resource_name):
         self.instrument, identity = result
-        self.current_func = "VOLT:DC"
         self.is_connected = True
         self.btn_connect.setText("Отключиться")
         self.set_lan_message(f"Подключён {identity} ({resource_name})")
+
+        self.load_device_profile()
         try:
+            self.instrument.write(f"CONF:{self.current_func}")
             self.change_range()
             self.change_speed()
-            self.change_impedance()
+            if self.current_func == "VOLT:DC":
+                self.change_impedance()
         except Exception as exc:
             self.disconnect_instrument()
             self.operation_failed(str(exc))
 
     def disconnect_instrument(self):
+        if self.is_connected:
+            self.save_device_profile()
         self.stop_measurement()
         if self.instrument:
             try:
@@ -579,15 +612,29 @@ class MultimeterApp(QMainWindow):
         if not self.instrument: return
         dlg = FunctionDialog(self)
         if dlg.exec():
-            self.current_func = "VOLT:DC"
-            self.instrument.write("CONF:VOLT:DC")
-            self.unit_label.setText("VDC")
+            func, unit = dlg.get_selected_function()
+            self.current_func = func
+            self.instrument.write(f"CONF:{func}")
+            self.unit_label.setText(unit)
+
+            if func == "VOLT:DC":
+                self.imp_check.setEnabled(True)
+            else:
+                self.imp_check.setEnabled(False)
             
-            self.imp_check.setEnabled(True) 
-            
+            self.range_combo.blockSignals(True)
+            self.range_combo.clear()
+            if func == "VOLT:DC":
+                self.range_combo.addItems(["AUTO", "200mV", "2V", "20V", "200V", "1000V"])
+            elif func == "CURR:DC":
+                self.range_combo.addItems(["AUTO", "200uA", "2mA", "20mA", "200mA", "2A", "10A"])
+            elif func == "RES":
+                self.range_combo.addItems(["AUTO", "200Ohm", "2kOhm", "20kOhm", "200kOhm", "2MOhm", "10MOhm", "100MOhm"])
+            self.range_combo.blockSignals(False)
             self.range_combo.setCurrentText("AUTO")
             self.change_range()
-
+            self.save_device_profile()
+                        
     def open_math_dialog(self):
         if not self.instrument: return
         dlg = MathDialog(self.instrument, self)
@@ -610,19 +657,49 @@ class MultimeterApp(QMainWindow):
     def change_range(self):
         if not self.instrument: return
         rng = self.range_combo.currentText()
+        
+        # Если выбран AUTO, включаем автоматический выбор диапазона для текущей функции
         if rng == "AUTO":
             self.instrument.write(f"{self.current_func}:RANG:AUTO ON")
         else:
+            # Выключаем автодиапазон при ручном выборе шкалы
+            self.instrument.write(f"{self.current_func}:RANG:AUTO OFF")
+            
+            val = 0.0
+            # Обработка напряжения (V / mV)
             if "mV" in rng:
                 val = float(rng.replace("mV", "")) * 1e-3
-            else:
+            elif "V" in rng:
                 val = float(rng.replace("V", ""))
+            
+            # Обработка тока (uA / mA / A)
+            elif "uA" in rng:
+                val = float(rng.replace("uA", "")) * 1e-6
+            elif "mA" in rng:
+                val = float(rng.replace("mA", "")) * 1e-3
+            # Убедимся, что проверяем строго 'A' (но не 'mA' или 'uA')
+            elif rng.endswith("A"):
+                val = float(rng.replace("A", ""))
+                
+            # Обработка сопротивления (Ohm / kOhm / MOhm)
+            elif "MOhm" in rng:
+                val = float(rng.replace("MOhm", "")) * 1e6
+            elif "kOhm" in rng:
+                val = float(rng.replace("kOhm", "")) * 1e3
+            elif "Ohm" in rng:
+                val = float(rng.replace("Ohm", ""))
+                
+            # Отправляем числовое значение диапазона прибору
             self.instrument.write(f"{self.current_func}:RANG {val}")
+        
+        # Сохраняем настройки абонента
+        self.save_device_profile()
 
     def change_speed(self):
         if not self.instrument: return
         speed = self.speed_combo.currentText()
         self.instrument.write(f"{self.current_func}:NPLC {speed}")
+        self.save_device_profile()
 
     def change_impedance(self):
         if not self.instrument or self.current_func != "VOLT:DC": return
@@ -633,25 +710,36 @@ class MultimeterApp(QMainWindow):
         self.table.setRowCount(0)
 
     def save_log(self):
+        """Автоматическое формирование имени файла: дата_время_<U/I/R>_<ID>.txt"""
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        
+        # Определяем измеряемую величину для имени файла
+        if "VOLT" in self.current_func:
+            meas_type = "U"
+        elif "CURR" in self.current_func:
+            meas_type = "I"
+        else:
+            meas_type = "R"
+            
+        dev_id = self.get_device_id().replace(":", "_").replace("/", "_")
+        default_filename = f"{timestamp}_{meas_type}_{dev_id}.txt"
+        
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить лог", "", "Text Files (*.txt);;All Files (*)"
+            self, "Сохранить лог", default_filename, "Text Files (*.txt);;All Files (*)"
         )
         if file_path:
             try:
                 with open(file_path, 'w', encoding='utf-8') as f:
-                    # Заголовок таблицы (ширина: №=6, Время=15, Значение=20)
-                    f.write(f"{'№':>6} | {'Время':^15} | {'Значение':^20}\n")
-                    f.write("-" * 46 + "\n")
-                    
+                    f.write(f"{'№':>6} | {'Время':^15} | {'Значение':^20} | {'Ед. изм.':^10}\n")
+                    f.write("-" * 61 + "\n")
                     for row in range(self.table.rowCount()):
                         num = self.table.item(row, 0).text()
                         time_str = self.table.item(row, 1).text()
                         val = self.table.item(row, 2).text()
-                        
-                        # Форматируем строку с выравниванием
-                        f.write(f"{num:>6} | {time_str:^15} | {val:>20}\n")
-                
-                QMessageBox.information(self, "Успех", "Лог сохранен в TXT")
+                        unit = self.table.item(row, 3).text()
+
+                        f.write(f"{num:>6} | {time_str:^15} | {val:>20} | {unit:^10}\n")
+                QMessageBox.information(self, "Успех", f"Лог сохранен: {file_path}")
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить: {e}")
 
@@ -685,12 +773,24 @@ class MultimeterApp(QMainWindow):
 
     def update_display(self, value, func):
         self.value_label.setText(f"{value:+.6f}")
+        current_unit = self.unit_label.text()
         row = self.table.rowCount()
+        time_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        val_str = f"{value:.9E}"
         self.table.insertRow(row)
         self.table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
         self.table.setItem(row, 1, QTableWidgetItem(datetime.now().strftime("%H:%M:%S.%f")[:-3]))
         self.table.setItem(row, 2, QTableWidgetItem(f"{value:.9E}"))
+        self.table.setItem(row, 3, QTableWidgetItem(current_unit))
         self.table.scrollToBottom()
+
+        if self.is_logging_to_file and self.log_file:
+            try:
+                num_str = str(row + 1)
+                self.log_file.write(f"{num_str:>6} | {time_str:^15} | {val_str:>20} | {current_unit:^10}\n")
+                self.log_file.flush() # Принудительно сбрасываем буфер на диск, чтобы данные не потерялись
+            except Exception as e:
+                print(f"Ошибка записи в файл лога: {e}")
 
     def on_worker_error(self, err):
         QMessageBox.critical(self, "Ошибка", err)
@@ -706,9 +806,129 @@ class MultimeterApp(QMainWindow):
             self._close_after_restore = True
             self.restore_lan()
             return
+        self.stop_file_logging()
         self.save_settings()
         self.disconnect_instrument()
         self.stop_dhcp()
         if self.rm:
             self.rm.close()
         event.accept()
+    
+    def get_device_id(self):
+        """Формирует уникальный идентификатор устройства (абонента) для LAN, COM и USB"""
+        if self.radio_lan.isChecked():
+            ip = self.ip_edit.text().strip()
+            return f"LAN_{ip}" if ip else "LAN_unknown"
+            
+        elif self.radio_rs232.isChecked():
+            port = self.combo_com.currentText().strip()
+            return f"COM_{port.replace('::', '_')}" if port else "COM_unknown"
+            
+        else:  # USB
+            # Если прибор уже подключен и объект создан, берем его точный ресурсный строковый ID
+            if self.instrument and hasattr(self.instrument, 'resource_name'):
+                res_str = self.instrument.resource_name
+                return f"USB_{res_str.replace('::', '_').replace('?', '_')}"
+                
+            # Если еще не подключен, пытаемся найти первый доступный USB-инструмент через VISA
+            if self.rm:
+                try:
+                    for r in self.rm.list_resources():
+                        if 'USB' in r and 'INSTR' in r:
+                            return f"USB_{r.replace('::', '_').replace('?', '_')}"
+                except Exception:
+                    pass
+            return "USB_default"
+
+    def load_device_profile(self):
+        """Загружает настройки конкретного абонента (мультиметра)"""
+        dev_id = self.get_device_id()
+        self.settings.beginGroup(f"device_{dev_id}")
+        self.current_func = self.settings.value("current_func", "VOLT:DC")
+        self.measure_interval = int(self.settings.value("measure_interval", 100))
+        self.max_points = int(self.settings.value("max_points", 10000))
+        speed = self.settings.value("speed", "FAST")
+        rng = self.settings.value("range", "AUTO")
+        self.settings.endGroup()
+
+        self.speed_combo.setCurrentText(speed)
+        
+        # Обновляем интерфейс в зависимости от сохраненной функции
+        if self.current_func == "VOLT:DC":
+            self.unit_label.setText("VDC")
+            self.range_combo.addItems(["AUTO", "200mV", "2V", "20V", "200V", "1000V"])
+        elif self.current_func == "CURR:DC":
+            self.unit_label.setText("ADC")
+            self.range_combo.addItems(["AUTO", "200uA", "2mA", "20mA", "200mA", "2A", "10A"])
+        elif self.current_func == "RES":
+            self.unit_label.setText("Ω")
+            self.range_combo.addItems(["AUTO", "200Ohm", "2kOhm", "20kOhm", "200kOhm", "2MOhm", "10MOhm", "100MOhm"])
+        
+        self.range_combo.setCurrentText(rng)
+
+    def save_device_profile(self):
+        """Сохраняет настройки конкретного абонента (мультиметра)"""
+        if not self.is_connected:
+            return
+        dev_id = self.get_device_id()
+        self.settings.beginGroup(f"device_{dev_id}")
+        self.settings.setValue("current_func", self.current_func)
+        self.settings.setValue("measure_interval", self.measure_interval)
+        self.settings.setValue("max_points", self.max_points)
+        self.settings.setValue("speed", self.speed_combo.currentText())
+        self.settings.setValue("range", self.range_combo.currentText())
+        self.settings.endGroup()
+
+    def toggle_logging_to_file(self):
+        if not self.is_logging_to_file:
+            # --- СТАРТ ЗАПИСИ ---
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            
+            if "VOLT" in self.current_func:
+                meas_type = "U"
+            elif "CURR" in self.current_func:
+                meas_type = "I"
+            else:
+                meas_type = "R"
+                
+            dev_id = self.get_device_id().replace(":", "_").replace("/", "_")
+            default_filename = f"{timestamp}_{meas_type}_{dev_id}.txt"
+            
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Создать файл лога", default_filename, "Text Files (*.txt);;All Files (*)"
+            )
+            
+            if file_path:
+                try:
+                    # Открываем файл на дозапись/запись с кодировкой UTF-8
+                    self.log_file = open(file_path, 'w', encoding='utf-8')
+                    self.log_file_path = file_path
+                    
+                    # Записываем шапку таблицы
+                    self.log_file.write(f"{'№':>6} | {'Время':^15} | {'Значение':^20} | {'Ед. изм.':^10}\n")
+                    self.log_file.write("-" * 61 + "\n")
+                    self.log_file.flush()
+                    
+                    self.is_logging_to_file = True
+                    self.btn_toggle_log.setText("Остановить запись")
+                    self.statusBar().showMessage(f"Запись лога в файл начата: {file_path}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Ошибка", f"Не удалось создать файл лога: {e}")
+        else:
+            # --- ОСТАНОВКА ЗАПИСИ ---
+            self.stop_file_logging()
+            QMessageBox.information(self, "Запись завершена", f"Лог успешно сохранен в файл:\n{self.log_file_path}")
+
+    def stop_file_logging(self):
+        """Безопасное закрытие файла лога"""
+        if self.is_logging_to_file:
+            self.is_logging_to_file = False
+            if self.log_file:
+                try:
+                    self.log_file.close()
+                except Exception:
+                    pass
+                self.log_file = None
+            
+            self.btn_toggle_log.setText("Начать запись в лог")
+            self.statusBar().showMessage("Запись лога остановлена.")

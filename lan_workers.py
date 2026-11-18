@@ -1,5 +1,7 @@
 """Run network configuration and VISA identification outside the GUI thread."""
-
+import os
+import subprocess
+import sys
 from PyQt6.QtCore import QThread, pyqtSignal
 
 
@@ -25,14 +27,33 @@ def prepare_lan(configurator, guid):
     from scapy.arch.windows import get_windows_if_list
 
     if not conf.use_pcap:
-        raise RuntimeError("Для DHCP требуется Npcap. Установите Npcap и перезапустите программу.")
+        installer_name = "npcap-installer.exe"
+        base_path = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        installer_path = os.path.join(base_path, "drivers", installer_name)
+
+        if os.path.exists(installer_path):
+            try:
+                subprocess.Popen(f'powershell Start-Process "{installer_path}" -Verb RunAs', shell=True)
+                raise RuntimeError(
+                    "Драйвер Npcap не обнаружен в системе.\n\n"
+                    "Запущен локальный установщик из папки проекта. "
+                    "Установите Npcap (обязательно включите WinPcap-совместимость), затем перезапустите программу."
+                )
+            except Exception as e:
+                raise RuntimeError(f"Не удалось автоматически запустить установщик Npcap: {e}")
+        else:
+            raise RuntimeError(
+                "Для DHCP требуется Npcap. Установщик не найден в папке проекта.\n"
+                "Скачайте и установите Npcap с сайта npcap.com"
+            )
+
     normalize = lambda value: str(value or "").strip("{}").lower()
     interface = next((item for item in get_windows_if_list()
                       if normalize(item.get("guid")) == normalize(guid)), None)
     if interface is None:
         raise RuntimeError("Npcap не видит выбранный Ethernet. Обновите адаптеры.")
+        
     plan = configurator.prepare(guid)
-    # Use the stable capture device path, never a route or adapter description.
     plan["capture_interface"] = interface.get("network_name") or rf"\Device\NPF_{guid}"
     return plan
 
