@@ -14,13 +14,11 @@ class SerialWorker(QObject):
     response_received = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     connected = pyqtSignal(bool, str)
-    connection_lost = pyqtSignal(str) 
 
     def __init__(self):
         super().__init__()
         self.rm = None
         self.instr = None
-        self._running = False
 
     def _get_rm(self):
         if self.rm is None:
@@ -36,7 +34,6 @@ class SerialWorker(QObject):
             self.instr = rm.open_resource(port)
 
             is_serial = port.upper().startswith("ASRL")
-
             if is_serial:
                 if baud <= 0:
                     baud = 9600
@@ -56,7 +53,6 @@ class SerialWorker(QObject):
             self.instr.timeout = 5000
             self.instr.read_termination = '\n'
             self.instr.write_termination = '\n'
-            self._running = True
             self.connected.emit(True, port)
         except Exception as e:
             self.instr = None
@@ -64,7 +60,6 @@ class SerialWorker(QObject):
             self.connected.emit(False, port)
 
     def close_port(self):
-        self._running = False
         port = ""
         try:
             if self.instr:
@@ -97,10 +92,42 @@ class SerialWorker(QObject):
             return ""
 
     def set_voltage(self, ch: int, v: float):
-        self._write(f"CH{ch}:VOLTage {v:.3f}")
+        if ch == 3:
+            self._write("INStrument CH3")
+            self._write(f"VOLTage {v:.3f}")
+        else:
+            self._write(f"CH{ch}:VOLTage {v:.3f}")
 
     def set_current(self, ch: int, i: float):
-        self._write(f"CH{ch}:CURRent {i:.3f}")
+        if ch == 3:
+            self._write("INStrument CH3")
+            self._write(f"CURRent {i:.3f}")
+        else:
+            self._write(f"CH{ch}:CURRent {i:.3f}")
 
     def set_output(self, on: bool):
         self._write(f"OUTPUT {'ON' if on else 'OFF'}")
+
+    def get_voltage(self, ch: int):
+        if ch == 3:
+            self._write("INStrument CH3")
+            voltage = self._query("VOLTage?")
+        else:
+            voltage = self._query(f"CH{ch}:VOLTage?")
+        if voltage:
+            self.response_received.emit(f"VOLTAGE:{ch}:{voltage}")
+
+    def get_current(self, ch: int):
+        if ch == 3:
+            self._write("INStrument CH3")
+            current = self._query("CURRent?")
+        else:
+            current = self._query(f"CH{ch}:CURRent?")
+        if current:
+            self.response_received.emit(f"CURRENT:{ch}:{current}")
+
+    def get_serial_number(self):
+        raw = self._query("*IDN?")
+        parts = [p.strip() for p in raw.split(",")] if raw else []
+        serial_number = parts[2] if len(parts) >= 3 else (raw or "")
+        self.response_received.emit(f"SERIAL_NUMBER:{serial_number}")

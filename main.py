@@ -1,19 +1,24 @@
+# Тестовый запуск модуля отдельно от внешнего главного окна.
 import sys
 import signal
-from gui import *
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QFont
 from PyQt6.QtCore import QTimer
+from styles import GLOBAL_QSS
+from power_supply import PowerSupplyController
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setFont(QFont("Segoe UI", 11))
     app.setStyleSheet(GLOBAL_QSS)
 
-    w = MainWindow()
-    w.show()
+    ctrl = PowerSupplyController()
+    ctrl.error.connect(lambda sid, msg: print(f"[{sid}] {msg}"))
+    ctrl.add_device("psu1")
+    ctrl.open_settings_window("psu1")
 
-    signal.signal(signal.SIGINT, lambda *_: w.close())
+    app.aboutToQuit.connect(ctrl.shutdown_all)
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
 
     sig_timer = QTimer()
     sig_timer.start(200)
