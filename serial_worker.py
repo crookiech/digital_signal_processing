@@ -1,4 +1,5 @@
 import pyvisa
+import time
 from PyQt6.QtCore import QObject, pyqtSignal
 
 VI_ATTR_ASRL_BAUD = 0x3FFF0001
@@ -82,52 +83,50 @@ class SerialWorker(QObject):
             return False
 
     def _query(self, cmd: str) -> str:
+        print(f"[QUERY] {cmd}")
         if not self.instr:
             self.error_occurred.emit("нет подключения")
             return ""
         try:
-            return self.instr.query(cmd).strip()
+            # Очищаем буфер приема и отправляем команду
+            self.instr.clear()
+            self.instr.write(cmd)
+            time.sleep(0.2)  # даем прибору время подумать
+            return self.instr.read().strip()
         except Exception as e:
             self.error_occurred.emit(f"Ошибка чтения '{cmd}': {e}")
             return ""
 
     def set_voltage(self, ch: int, v: float):
-        if ch == 3:
-            self._write("INStrument CH3")
-            self._write(f"VOLTage {v:.3f}")
-        else:
-            self._write(f"CH{ch}:VOLTage {v:.3f}")
+        self._write(f"CH{ch}:VOLTage {v:.3f}")
 
     def set_current(self, ch: int, i: float):
-        if ch == 3:
-            self._write("INStrument CH3")
-            self._write(f"CURRent {i:.3f}")
-        else:
-            self._write(f"CH{ch}:CURRent {i:.3f}")
+        self._write(f"CH{ch}:CURRent {i:.3f}")
 
     def set_output(self, on: bool):
         self._write(f"OUTPUT {'ON' if on else 'OFF'}")
 
     def get_voltage(self, ch: int):
-        if ch == 3:
-            self._write("INStrument CH3")
-            voltage = self._query("VOLTage?")
-        else:
-            voltage = self._query(f"CH{ch}:VOLTage?")
+        voltage = self._query(f"CH{ch}:VOLTage?")
+        print(f"[DEBUG] CH{ch} voltage response: '{voltage}'")
         if voltage:
             self.response_received.emit(f"VOLTAGE:{ch}:{voltage}")
 
     def get_current(self, ch: int):
         if ch == 3:
             self._write("INStrument CH3")
+            time.sleep(0.05)
             current = self._query("CURRent?")
         else:
             current = self._query(f"CH{ch}:CURRent?")
+        print(f"[DEBUG] CH{ch} current response: '{current}'")
         if current:
             self.response_received.emit(f"CURRENT:{ch}:{current}")
 
     def get_serial_number(self):
+        print(">>> Отправка *IDN?")
         raw = self._query("*IDN?")
+        print("<<< Ответ:", raw)
         parts = [p.strip() for p in raw.split(",")] if raw else []
         serial_number = parts[2] if len(parts) >= 3 else (raw or "")
         self.response_received.emit(f"SERIAL_NUMBER:{serial_number}")

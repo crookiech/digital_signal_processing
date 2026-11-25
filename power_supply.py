@@ -144,7 +144,7 @@ class PowerSupplyController(QObject):
             if ("нет подключения" in msg
                     or "Ошибка чтения" in msg
                     or "Ошибка записи" in msg):
-                sess.state.connected = False
+                # sess.state.connected = False
                 self._refresh_window(sid)
                 self.state_changed.emit(sid)
         self.error.emit(sid, msg)

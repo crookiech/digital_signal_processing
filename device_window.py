@@ -196,9 +196,9 @@ class DeviceWindow(QWidget):
             f"CH{ch}: режим {cfg['label']} "
             f"({cfg['v_min']}-{cfg['v_max']} В, "
             f"{cfg['i_min']}-{cfg['i_max']} А)")
-        if self.session.state.connected:
-            self.session.request_voltage(ch)
-            self.session.request_current(ch)
+        # if self.session.state.connected:
+        #     self.session.request_voltage(ch)
+        #     self.session.request_current(ch)
 
     def _on_output(self, on: bool):
         if not self.session.state.connected:
