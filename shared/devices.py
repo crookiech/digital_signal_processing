@@ -51,7 +51,7 @@ class Device:
 def demo_devices():
     return [
         Device("multimeter", "Мультиметр", name="Тест", is_demo=True),
-        Device("converter", "ЦАП/АЦП", name="Тест", available=False, is_demo=True),
+        Device("converter", "ЦАП/АЦП", name="Тест", is_demo=True),
         Device("internal_dac", "Внутренний\nЦАП", name="Тест", available=False, is_demo=True),
         Device("power_supply", "Источник\nпитания", name="Тест", is_demo=True),
     ]

@@ -29,6 +29,11 @@ def create_power_supply():
     return PowerSupplyWindow()
 
 
+def create_dac():
+    from .dac.window import DacWindow
+    return DacWindow()
+
+
 class ApplicationController:
     def __init__(self, app, auto_discovery=True, registry=None):
         self.app = app
@@ -36,6 +41,7 @@ class ApplicationController:
         self.manager = SessionManager({
             "multimeter": create_multimeter,
             "power_supply": create_power_supply,
+            "converter": create_dac,
         }, self.menu)
         self.menu.device_requested.connect(self.open_device)
         self.menu.exit_requested.connect(self.shutdown)
