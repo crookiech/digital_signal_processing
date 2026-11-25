@@ -1,2 +1,32 @@
-venv/
+# Tests (kept locally)
+/tests/
+
+# Python bytecode and caches
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Coverage and generated builds
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local Ethernet restore state
+multimeter/.lan_restore.json
+multimeter/.lan_restore.json.tmp
