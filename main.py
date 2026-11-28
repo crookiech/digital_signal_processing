@@ -2,10 +2,22 @@ import signal
 import sys
 from pathlib import Path
 
-# Support both `python main.py` and importing measurement_system.main.
+# Direct execution must not depend on the checkout directory's name.
+# Give relative imports a package rooted at this file, including when the
+# directory contains spaces, Cyrillic characters, or hyphens.
 if not __package__:
-    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-    __package__ = "measurement_system"
+    from importlib.util import module_from_spec, spec_from_file_location
+
+    application_dir = Path(__file__).resolve().parent
+    package_spec = spec_from_file_location(
+        "_measurement_system_app",
+        application_dir / "__init__.py",
+        submodule_search_locations=[str(application_dir)],
+    )
+    package = module_from_spec(package_spec)
+    sys.modules[package_spec.name] = package
+    package_spec.loader.exec_module(package)
+    __package__ = package_spec.name
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox, QInputDialog
@@ -17,6 +29,7 @@ from .shared.discovery import DeviceDiscovery
 from .shared.registry import DeviceRegistry
 from .shared.transport import parse_identity
 from .shared.devices import DeviceState
+from .shared.driver_setup import ensure_system_drivers
 
 
 def create_multimeter():
@@ -225,6 +238,8 @@ def main():
     app.setApplicationName("Measurement System")
     configure_font(app)
     app.setQuitOnLastWindowClosed(False)
+    if not ensure_system_drivers():
+        return 1
     controller = ApplicationController(app)
     signal.signal(signal.SIGINT, lambda *_: controller.menu.close())
     timer = QTimer()

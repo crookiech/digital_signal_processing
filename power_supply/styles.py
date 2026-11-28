@@ -90,7 +90,9 @@ QLabel {{
 
 CHANNEL_COLORS = {
     "green": "#1b5e20",
-    "blue":  "#1565c0",
+    "blue": "#1565c0",
+    "orange": "#ff9500",
+    "red": "#b71c1c",
 }
 
 STATUS_COLORS = {
@@ -103,3 +105,23 @@ STATUS_COLORS = {
         "color": "#1b5e20", "bg": "#e8f5e9", "border": "#66bb6a",
     },
 }
+
+OPERATING_MODES = {
+    "arm": {
+        "label": "ARM",
+        "v_min": 0.0, "v_max": 5.0,
+        "i_min": 0.0, "i_max": 0.02,
+    },
+    "avr": {
+        "label": "AVR",
+        "v_min": 0.0, "v_max": 3.3,
+        "i_min": 0.0, "i_max": 0.02,
+    },
+    "free": {
+        "label": "Произвольный",
+        "v_min": 0.0, "v_max": 30.0,
+        "i_min": 0.0, "i_max": 5.0,
+    },
+}
+
+CH3_VOLTAGES = [1.8, 2.5, 3.3, 5.0]

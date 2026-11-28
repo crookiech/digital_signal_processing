@@ -195,6 +195,11 @@ class MainMenu(QMainWindow):
         content.addWidget(self.record_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
     def update_device(self, device):
+        if (device.interface == "RS"
+                and device.state == DeviceState.DISCONNECTED
+                and (not device.kind or not device.present or device.reachable is not True)):
+            self.remove_device(device.key)
+            return
         if device.kind == "multimeter" and device.interface == "USB" and not device.present:
             self.remove_device(device.key)
             return

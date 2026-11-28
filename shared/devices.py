@@ -80,7 +80,7 @@ def multimeter_previews():
 
 def power_supply_previews():
     """Power supply samples use illustrative channel values, not measurements."""
-    values = ((1, 3.30, 0.010), (2, 5.00, 0.020))
+    values = ((1, 3.30, 0.010), (2, 5.00, 0.020), (3, 3.30, 0.100))
     devices = [
         Device("power_supply_disconnected", "Источник питания", name="Источник питания 1",
                state=DeviceState.DISCONNECTED, is_preview=True),
@@ -97,7 +97,8 @@ def power_supply_previews():
             name=f"Источник питания {number}", state=state,
             channel_values=(
                 ((1, 3.30 + number * 0.1, number * 0.005),
-                 (2, 5.00 - number * 0.1, number * 0.004))
+                 (2, 5.00 - number * 0.1, number * 0.004),
+                 (3, 3.30, number * 0.010))
                 if state != DeviceState.DISCONNECTED else ()
             ),
             is_preview=True,

@@ -1,4 +1,4 @@
-"""Enumerate USB VISA instruments and COM ports without probing serial equipment."""
+"""Discover USB/RS232 instruments by identity, without accessing owned ports."""
 
 import threading
 
@@ -6,7 +6,7 @@ import pyvisa
 from PyQt6.QtCore import QThread, pyqtSignal
 from serial.tools import list_ports
 
-from .transport import canonical_resource, claims, configure_transport
+from .transport import canonical_resource, claims, configure_transport, parse_identity
 
 
 def is_bluetooth_port(port):
@@ -37,7 +37,7 @@ class DeviceDiscovery(QThread):
         self.start()
 
     def remember(self, resource, baud):
-        # Serial probing is permitted only after a successful user connection.
+        # Reuse the baud rate confirmed by a successful user connection.
         with self._known_lock:
             self._known[canonical_resource(resource)] = int(baud)
 
@@ -51,8 +51,11 @@ class DeviceDiscovery(QThread):
                     entry["resource"], open_timeout=1000
                 )
                 configure_transport(instrument, entry["resource"], baud)
-                entry["identity"] = instrument.query("*IDN?").strip()
-                entry["reachable"] = bool(entry["identity"])
+                identity = instrument.query("*IDN?").strip()
+                if entry["interface"] == "RS" and not parse_identity(identity)[0]:
+                    raise ValueError("Ответил неподдерживаемый прибор")
+                entry["identity"] = identity
+                entry["reachable"] = bool(identity)
             except Exception:
                 entry["reachable"] = False
             finally:
@@ -104,8 +107,9 @@ class DeviceDiscovery(QThread):
             for resource, entry in self._serial.items():
                 if self._stop.is_set():
                     break
-                if resource in known:
-                    self._probe(entry, known[resource])
+                # A COM port proves only the presence of an adapter.
+                # Confirm an instrument at the saved speed, or 9600 for a new port.
+                self._probe(entry, known.get(resource, 9600))
         return [*self._usb.values(), *self._serial.values(), *self._excluded_serial]
 
     def run(self):

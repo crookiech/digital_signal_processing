@@ -1,69 +1,11 @@
 import pyvisa
 from PyQt6.QtGui import QShortcut, QKeySequence
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QDoubleSpinBox, QPushButton, QComboBox, QPlainTextEdit, QMessageBox, QFormLayout
+from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QDoubleSpinBox, QPushButton, QComboBox, QPlainTextEdit, QMessageBox, QFormLayout, QScrollArea
 from .serial_worker import SerialWorker
 from .styles import *
-
-class ChannelPanel(QGroupBox):
-    set_v_requested = pyqtSignal(int, float)
-    set_i_requested = pyqtSignal(int, float)
-
-    def __init__(self, ch: int, v_min=3.3, v_max=5.0, i_min=0.0, i_max=0.05, accent_key: str = "green"):
-        super().__init__(f"CH{ch}")
-        self.ch = ch
-        self._accent_key = accent_key
-
-        layout = QFormLayout()
-        layout.setVerticalSpacing(8)
-        layout.setHorizontalSpacing(10)
-
-        self.v_spin = QDoubleSpinBox()
-        self.v_spin.setRange(v_min, v_max)
-        self.v_spin.setDecimals(2)
-        self.v_spin.setStepType(QDoubleSpinBox.StepType.DefaultStepType)
-        self.v_spin.setSingleStep(0.01)
-        self.v_spin.setSuffix(" В")
-        self.v_spin.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.UpDownArrows)
-
-        self.i_spin = QDoubleSpinBox()
-        self.i_spin.setRange(i_min, i_max)
-        self.i_spin.setDecimals(3)
-        self.i_spin.setStepType(QDoubleSpinBox.StepType.DefaultStepType)
-        self.i_spin.setSingleStep(0.001)
-        self.i_spin.setSuffix(" А")
-
-        btn_v = QPushButton("Установить")
-        btn_i = QPushButton("Установить")
-        btn_v.clicked.connect(lambda: self.set_v_requested.emit(self.ch, self.v_spin.value()))
-        btn_i.clicked.connect(lambda: self.set_i_requested.emit(self.ch, self.i_spin.value()))
-
-        row_v = QHBoxLayout(); row_v.addWidget(self.v_spin, 1); row_v.addWidget(btn_v)
-        row_v.setSpacing(8)
-        row_i = QHBoxLayout(); row_i.addWidget(self.i_spin, 1); row_i.addWidget(btn_i)
-        row_i.setSpacing(8)
-
-        lbl_v = QLabel(
-            f'Напряжение:<br>'
-            f'<span style="color:#808080">{v_min}-{v_max} В</span>'
-        )
-        lbl_v.setTextFormat(Qt.TextFormat.RichText)
-        lbl_v.setWordWrap(True)
-
-        lbl_i = QLabel(
-            f'Ток:<br>'
-            f'<span style="color:#808080">{i_min}-{i_max} А</span>'
-        )
-        lbl_i.setTextFormat(Qt.TextFormat.RichText)
-        lbl_i.setWordWrap(True)
-
-        layout.addRow(lbl_v, row_v)
-        layout.addRow(lbl_i, row_i)
-
-        self.setLayout(layout)
-
-        border = CHANNEL_COLORS[accent_key]
-        self.setStyleSheet(CHANNEL_STYLE_TEMPLATE.format(border=border))
+from .channels import ChannelPanel, ChannelPanel3
+from .device_model import DeviceState, ChannelState
 
 class MainWindow(QMainWindow):
     sig_open = pyqtSignal(str, int)
@@ -75,9 +17,11 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("UDP3305C")
-        self.resize(640, 600)
+        self.resize(900, 720)
 
         self._connected = False
+        self.device_state = DeviceState()
+        self._initialize_editors = False
         self.rm = None
         try:
             self.rm = pyvisa.ResourceManager('@ivi')
@@ -88,7 +32,11 @@ class MainWindow(QMainWindow):
                 print(f"VISA не инициализирован: {e}")
 
         central = QWidget()
-        self.setCentralWidget(central)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(central)
+        self.setCentralWidget(scroll)
         root = QVBoxLayout(central)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
@@ -146,6 +94,9 @@ class MainWindow(QMainWindow):
         ch_layout.addWidget(self.ch1)
         ch_layout.addWidget(self.ch2)
         root.addLayout(ch_layout)
+        self.ch3 = ChannelPanel3(3, accent_key="orange")
+        root.addWidget(self.ch3)
+        self.channels = {1: self.ch1, 2: self.ch2, 3: self.ch3}
 
         out_box = QGroupBox("Выход")
         out_layout = QHBoxLayout()
@@ -182,6 +133,10 @@ class MainWindow(QMainWindow):
         self.ch1.set_i_requested.connect(self.on_set_i)
         self.ch2.set_v_requested.connect(self.on_set_v)
         self.ch2.set_i_requested.connect(self.on_set_i)
+        self.ch3.set_v_requested.connect(self.on_set_v)
+        self.ch3.set_i_requested.connect(self.on_set_i)
+        self.ch1.mode_changed.connect(self.on_mode_changed)
+        self.ch2.mode_changed.connect(self.on_mode_changed)
 
         self.thread.start()
 
@@ -233,6 +188,13 @@ class MainWindow(QMainWindow):
             self.poll_timer.stop()
 
     def on_connected(self, ok: bool, port: str):
+        self.device_state.connected = ok
+        self.device_state.port = port
+        self.device_state.interface = (
+            "RS232" if self.cmb_iface.currentData() == "ASRL" else "USB"
+        )
+        self.device_state.baud = self.baud_combo.currentData() or 0
+        self._initialize_editors = ok
         if ok:
             self._connected = True
             self._set_status("connected")
@@ -254,19 +216,37 @@ class MainWindow(QMainWindow):
             else:
                 self.append_log(f"Не удалось подключиться к {port}")
 
+    def on_mode_changed(self, ch: int, key: str):
+        config = OPERATING_MODES[key]
+        self.append_log(
+            f"CH{ch}: режим {config['label']} "
+            f"({config['v_min']}-{config['v_max']} В, "
+            f"{config['i_min']}-{config['i_max']} А). "
+            "Изменения отправляются кнопками «Установить»."
+        )
+
+    def apply_confirmed_state(self, output, channels):
+        self.device_state.output_on = output
+        for channel, voltage, current in channels:
+            self.device_state.channels[channel] = ChannelState(voltage, current)
+            self.channels[channel].show_confirmed(
+                voltage, current, initialize=self._initialize_editors
+            )
+        self._initialize_editors = False
+
     def on_set_v(self, ch: int, value: float):
         if not self._connected:
             self.on_error(f"не удалось установить напряжение CH{ch}, нет подключения")
             return
         self.sig_set_v.emit(ch, value)
-        self.append_log(f"CH{ch}: установлено напряжение {value:.2f} В")
+        self.append_log(f"CH{ch}: запрос напряжения {value:.2f} В; ожидается подтверждение")
 
     def on_set_i(self, ch: int, value: float):
         if not self._connected:
             self.on_error(f"не удалось установить ток CH{ch}, нет подключения")
             return
         self.sig_set_i.emit(ch, value)
-        self.append_log(f"CH{ch}: установлен ток {value:.2f} А")
+        self.append_log(f"CH{ch}: запрос тока {value:.2f} А; ожидается подтверждение")
 
     def on_output_toggled(self, checked: bool):
         if not self._connected:
@@ -277,8 +257,13 @@ class MainWindow(QMainWindow):
             self.on_error("не удалось включить выход, нет подключения")
             return
         self.sig_set_out.emit(checked)
-        self.btn_output.setText("Выключить выход" if checked else "Включить выход")
-        self.append_log(f"Выход {'включен' if checked else 'выключен'}")
+        self.btn_output.blockSignals(True)
+        self.btn_output.setChecked(self.device_state.output_on)
+        self.btn_output.blockSignals(False)
+        self.append_log(
+            f"Запрошено {'включение' if checked else 'выключение'} выхода; "
+            "ожидается подтверждение прибора"
+        )
 
     def on_error(self, msg: str):
         if "нет подключения" in msg:

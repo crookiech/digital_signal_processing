@@ -1,5 +1,5 @@
 from PyQt6.QtCore import Qt, pyqtSignal
-from ..shared.transport import claims, port_label
+from ..shared.transport import claims, port_label, parse_identity
 
 from .gui import MainWindow
 from .styles import GLOBAL_QSS
@@ -76,6 +76,7 @@ class PowerSupplyWindow(MainWindow):
             claims.release(self._claimed_resource, self)
             self._claimed_resource = ""
             self.output_enabled = False
+            self.device_state.output_on = False
             self._poll_pending = False
             self.btn_output.blockSignals(True)
             self.btn_output.setChecked(False)
@@ -85,10 +86,15 @@ class PowerSupplyWindow(MainWindow):
 
     def _identity_received(self, identity):
         self.identity = identity
+        self.device_state.serial_number = parse_identity(identity)[1]
+        self.device_state.session_id = (
+            self.bound_device.key if self.bound_device is not None else "power_supply"
+        )
 
     def _state_received(self, output, channels):
         self.output_enabled = output
         self.channel_values = tuple(channels)
+        self.apply_confirmed_state(output, self.channel_values)
         self.btn_output.blockSignals(True)
         self.btn_output.setChecked(output)
         self.btn_output.blockSignals(False)
